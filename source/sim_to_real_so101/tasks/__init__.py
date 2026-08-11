@@ -95,3 +95,22 @@ gym.register(
     },
 )
 
+
+gym.register(
+    id="Lerobot-So101-Teleop-Scoop-Powder",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.scoop_powder_env_cfg:ScoopPowderEnvCfg",
+    },
+)
+
+gym.register(
+    id="Lerobot-So101-Teleop-Scoop-Powder-Eval",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.scoop_powder_env_cfg:ScoopPowderEvalEnvCfg",
+    },
+)
+

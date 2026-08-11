@@ -315,6 +315,40 @@ def random_asset_pose(
     return positions, orientations
 
 
+def reset_scoop_powder_objects(
+    env,
+    env_ids: torch.Tensor,
+    objects: dict[str, dict[str, tuple[float, float]]],
+    fixed_z: dict[str, float] | None = None,
+):
+    """Randomize the pose of each named object independently.
+
+    Simpler sibling of ``reset_vials_rack`` for the scoop-powder task's flat
+    set of objects (containers, scoop, cup) - no rack-slot placement logic
+    needed since these are all just freestanding items on the mat.
+
+    Args:
+        objects: Maps asset name -> pose_range dict (see ``random_asset_pose``).
+        fixed_z: Optional per-asset fixed spawn height (meters) overriding
+            whatever z range is in ``objects[name]`` - matches the
+            ``fixed_vial_z`` pattern so objects reliably land on the mat
+            surface regardless of their default USD/spawn height.
+    """
+    fixed_z = fixed_z or {}
+    for name, pose_range in objects.items():
+        asset: RigidObject = env.scene[name]
+        pos_offset = {}
+        this_range = pose_range
+        if name in fixed_z:
+            default_z = asset.data.default_root_state[env_ids[0], 2].item()
+            pos_offset = {"z": fixed_z[name] - default_z}
+            this_range = {**pose_range, "z": (0.0, 0.0)}
+
+        random_asset_pose(env, env_ids, asset, this_range, pos_offset)
+        zero_velocity = torch.zeros((len(env_ids), 6), device=asset.device)
+        asset.write_root_velocity_to_sim(zero_velocity, env_ids=env_ids)
+
+
 def reset_vials_rack(
         env,
         env_ids: torch.Tensor,

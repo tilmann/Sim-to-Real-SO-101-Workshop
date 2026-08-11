@@ -290,6 +290,202 @@ def vial_placed_on_rack(
     return any_placed.float().unsqueeze(-1)
 
 
+def scoop_grasped(
+    env: ManagerBasedRLEnv,
+    contact_sensor_cfg: SceneEntityCfg,
+    scoop_name: str = "scoop",
+    min_height: float = 0.01,
+    warmup_steps: int = 30,
+    force_threshold: float = 0.1,
+) -> torch.Tensor:
+    """Check if the scoop tool is currently grasped by the gripper.
+
+    Same contact-force + lift-height + hysteresis pattern as ``any_vial_grasped``,
+    specialized to a single named object instead of a list.
+
+    Returns:
+        Boolean tensor of shape (num_envs, 1) indicating grasp status per environment.
+    """
+    num_envs = env.num_envs
+    device = env.device
+
+    if not hasattr(scoop_grasped, "_is_holding"):
+        scoop_grasped._is_holding = torch.zeros(num_envs, dtype=torch.bool, device=device)
+
+    current_step = env.episode_length_buf
+    in_warmup = current_step < warmup_steps
+
+    just_reset = current_step <= 1
+    scoop_grasped._is_holding[just_reset] = False
+
+    contact_sensor: ContactSensor = env.scene[contact_sensor_cfg.name]
+    contact_forces = contact_sensor.data.force_matrix_w
+    contact_force_norm = torch.linalg.vector_norm(contact_forces, dim=-1)
+    # Single filter (the scoop) - sum over bodies, take the one filter column.
+    has_contact = contact_force_norm.sum(dim=1)[:, 0] > force_threshold
+
+    scoop: RigidObject = env.scene[scoop_name]
+    scoop_z = scoop.data.root_pos_w[:, 2]
+    is_lifted = scoop_z > min_height
+
+    new_grasp = has_contact & is_lifted & (~scoop_grasped._is_holding)
+    was_holding = scoop_grasped._is_holding.clone()
+    scoop_grasped._is_holding = (was_holding & has_contact) | new_grasp
+
+    is_grasped = scoop_grasped._is_holding & (~in_warmup)
+    return is_grasped.float().unsqueeze(-1)
+
+
+def scoop_deposit_grams(
+    env: ManagerBasedRLEnv,
+    contact_sensor_cfg: SceneEntityCfg,
+    scoop_name: str = "scoop",
+    containers: list[str] = ["container_1", "container_2"],
+    cup_name: str = "cup",
+    container_radius: float = 0.045,
+    container_z_range: tuple[float, float] = (0.0, 0.08),
+    cup_radius: float = 0.05,
+    cup_z_range: tuple[float, float] = (0.0, 0.1),
+    tilt_threshold: float = 0.5,
+    scoop_capacity_grams: float = 5.0,
+    pour_rate_grams_per_s: float = 8.0,
+    warmup_steps: int = 30,
+) -> torch.Tensor:
+    """Analytic proxy for "grams deposited in the cup" - there is no granular/
+    powder physics in Isaac Lab, so this is a deliberately simple heuristic
+    standing in for a real scale reading:
+
+    1. Scoop must be grasped (see ``scoop_grasped``).
+    2. Dipping the scoop within ``container_radius``/``container_z_range`` of a
+       container's current position "loads" it with ``scoop_capacity_grams``
+       (only while not already loaded - one dip = one scoopful).
+    3. Holding the loaded scoop within ``cup_radius``/``cup_z_range`` of the cup
+       AND tilted past ``tilt_threshold`` (its long axis significantly off
+       vertical, i.e. a pouring motion) drains the loaded amount into the cup's
+       running total at ``pour_rate_grams_per_s``, until empty.
+
+    This is intentionally crude - it exists so the sim side can teach the
+    coarse motion (reach the right container, carry, tilt over the cup,
+    repeat) and expose a scale-shaped observation with the same key the real
+    Tab5 channel uses, not to be physically accurate about scoop yield.
+
+    Returns:
+        Float tensor of shape (num_envs, 1): running total grams in the cup.
+    """
+    num_envs = env.num_envs
+    device = env.device
+
+    if not hasattr(scoop_deposit_grams, "_total_grams"):
+        scoop_deposit_grams._total_grams = torch.zeros(num_envs, device=device)
+        scoop_deposit_grams._grams_in_scoop = torch.zeros(num_envs, device=device)
+
+    current_step = env.episode_length_buf
+    in_warmup = current_step < warmup_steps
+    just_reset = current_step <= 1
+    scoop_deposit_grams._total_grams[just_reset] = 0.0
+    scoop_deposit_grams._grams_in_scoop[just_reset] = 0.0
+
+    is_grasped = scoop_grasped(
+        env, contact_sensor_cfg, scoop_name=scoop_name, warmup_steps=warmup_steps
+    ).squeeze(-1).bool()
+
+    scoop: RigidObject = env.scene[scoop_name]
+    scoop_pos = scoop.data.root_pos_w
+    scoop_quat = scoop.data.root_quat_w
+
+    unit_z = torch.zeros(num_envs, 3, device=device)
+    unit_z[:, 2] = 1.0
+    scoop_up_world = math_utils.quat_apply(scoop_quat, unit_z)
+    is_tilted = torch.abs(scoop_up_world[:, 2]) < tilt_threshold
+
+    is_loaded = scoop_deposit_grams._grams_in_scoop > 0.0
+
+    # --- Loading: dip into any container while empty ---
+    can_load = is_grasped & (~is_loaded) & (~in_warmup)
+    for container_name in containers:
+        container: RigidObject = env.scene[container_name]
+        container_pos = container.data.root_pos_w
+        xy_dist = torch.linalg.vector_norm(scoop_pos[:, :2] - container_pos[:, :2], dim=-1)
+        z_rel = scoop_pos[:, 2] - container_pos[:, 2]
+        dipped_in = (
+            (xy_dist < container_radius)
+            & (z_rel > container_z_range[0])
+            & (z_rel < container_z_range[1])
+        )
+        newly_loaded = can_load & dipped_in & (~is_loaded)
+        if newly_loaded.any():
+            scoop_deposit_grams._grams_in_scoop[newly_loaded] = scoop_capacity_grams
+            is_loaded = scoop_deposit_grams._grams_in_scoop > 0.0
+            env_ids = torch.where(newly_loaded)[0].tolist()
+            print(f"[SCOOP] loaded from {container_name} in env(s): {env_ids}")
+
+    # --- Pouring: tilted over the cup while loaded ---
+    cup: RigidObject = env.scene[cup_name]
+    cup_pos = cup.data.root_pos_w
+    xy_dist_cup = torch.linalg.vector_norm(scoop_pos[:, :2] - cup_pos[:, :2], dim=-1)
+    z_rel_cup = scoop_pos[:, 2] - cup_pos[:, 2]
+    over_cup = (
+        (xy_dist_cup < cup_radius) & (z_rel_cup > cup_z_range[0]) & (z_rel_cup < cup_z_range[1])
+    )
+    is_pouring = is_grasped & is_loaded & is_tilted & over_cup & (~in_warmup)
+
+    dt = env.step_dt
+    pour_amount = torch.where(
+        is_pouring,
+        torch.clamp(
+            torch.full((num_envs,), pour_rate_grams_per_s * dt, device=device),
+            max=scoop_deposit_grams._grams_in_scoop,
+        ),
+        torch.zeros(num_envs, device=device),
+    )
+    scoop_deposit_grams._grams_in_scoop -= pour_amount
+    scoop_deposit_grams._total_grams += pour_amount
+
+    return scoop_deposit_grams._total_grams.unsqueeze(-1)
+
+
+def scoop_target_reached_termination(
+    env: ManagerBasedRLEnv,
+    contact_sensor_cfg: SceneEntityCfg,
+    target_grams: float,
+    tolerance_grams: float = 1.0,
+    scoop_name: str = "scoop",
+    containers: list[str] = ["container_1", "container_2"],
+    cup_name: str = "cup",
+    confirm_steps: int = 25,
+    **deposit_kwargs,
+) -> torch.Tensor:
+    """Eval-only termination: cup's synthetic total within tolerance of the
+    target for ``confirm_steps`` consecutive steps (same debounce pattern as
+    ``vial_placed_on_rack_termination``).
+    """
+    num_envs = env.num_envs
+    device = env.device
+
+    total = scoop_deposit_grams(
+        env,
+        contact_sensor_cfg,
+        scoop_name=scoop_name,
+        containers=containers,
+        cup_name=cup_name,
+        **deposit_kwargs,
+    ).squeeze(-1)
+
+    within_tolerance = torch.abs(total - target_grams) <= tolerance_grams
+
+    if not hasattr(env, "_scoop_success_counter"):
+        env._scoop_success_counter = torch.zeros(num_envs, dtype=torch.long, device=device)
+
+    env._scoop_success_counter[env.episode_length_buf <= 1] = 0
+    env._scoop_success_counter = torch.where(
+        within_tolerance,
+        env._scoop_success_counter + 1,
+        torch.zeros_like(env._scoop_success_counter),
+    )
+
+    return env._scoop_success_counter >= confirm_steps
+
+
 def vial_placed_on_rack_termination(
     env: ManagerBasedRLEnv,
     contact_sensor_cfg: SceneEntityCfg,
