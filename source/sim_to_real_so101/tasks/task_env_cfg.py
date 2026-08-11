@@ -241,12 +241,12 @@ class SO101TaskEnvCfg(SO101TeleopEnvCfg):
         super().__post_init__()
 
         self.sim.render.enable_translucency = True
-        carb_settings = {
-            "rtx.reflections.enabled": True,
-            "rtx.translucency.reflectAtAllBounce": True,
-            "rtx.translucency.sampleRoughness": True,
-            "rtx.translucency.reflectionThroughputThreshold": 0.05,
-            "rtx.translucency.maxRefractionBounces": 5,
-            "rtx.raytracing.fractionalCutoutOpacity": True,
-        }
-        self.sim.render.carb_settings = carb_settings
+        # NOTE: the optional fine-tuning carb settings below (reflection
+        # bounce quality, etc.) were removed - at least one of them
+        # ("rtx.translucency.reflectAtAllBounce") doesn't map to a valid
+        # carb setting in this installed Isaac Sim version and hard-crashes
+        # env creation for every camera-based task (Vials-To-Rack included,
+        # not just newly-added ones). enable_translucency above still
+        # enables the actual feature; these were just extra quality tweaks
+        # on top of it, likely renamed/removed since whatever Isaac Sim
+        # version this workshop was originally built against.
