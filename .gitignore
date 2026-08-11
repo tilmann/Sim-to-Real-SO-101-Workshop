@@ -240,6 +240,7 @@ _build
 
 # Teleop Recorded Dataset
 /datasets/
+docker/real/scripts/datasets/
 
 # Tests
 tests/
