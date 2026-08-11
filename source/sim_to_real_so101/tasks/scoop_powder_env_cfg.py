@@ -65,47 +65,80 @@ CONTAINER_RADIUS = 0.03
 CONTAINER_HEIGHT = 0.06
 CUP_RADIUS = 0.045
 CUP_HEIGHT = 0.05
-SCOOP_RADIUS = 0.008
+SCOOP_RADIUS = 0.015  # was 0.008 - thinner than the ~0.017 vial radius the
+# gripper's actually been tested against, which let it tunnel/wedge into the
+# gripper's textured grip surface during a fast teleop grasp instead of
+# resting cleanly between the jaws
 SCOOP_LENGTH = 0.09
 
 container_base = RigidObjectCfg(
     prim_path="{ENV_REGEX_NS}/Container",
-    spawn=sim_utils.CylinderCfg(
+    # Capsule, not cylinder - same reason as the scoop (see below): PhysX has
+    # no native analytic cylinder shape, so a CylinderCfg gets approximated
+    # as a convex hull, which turned out to be unstable for grasp contact
+    # for every object using it, not just the scoop. Rounded ends look a bit
+    # less like a "container" than a flat-topped cylinder, but these are
+    # placeholder primitives anyway (real assets come later) and a robust
+    # physical interaction matters more right now than exact visual shape.
+    spawn=sim_utils.CapsuleCfg(
         radius=CONTAINER_RADIUS,
         height=CONTAINER_HEIGHT,
         mass_props=sim_utils.MassPropertiesCfg(mass=0.05),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(angular_damping=100.0),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
+        collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.6, 0.4, 0.2)),
     ),
     init_state=RigidObjectCfg.InitialStateCfg(
-        pos=(0.23, -0.12, MAT_SURFACE_Z + CONTAINER_HEIGHT / 2),
+        # capsule rests on its rounded end, so the center needs to be
+        # height/2 + radius above the mat, not just height/2 like a
+        # flat-ended cylinder
+        pos=(0.23, -0.12, MAT_SURFACE_Z + CONTAINER_HEIGHT / 2 + CONTAINER_RADIUS),
     ),
 )
 
 cup = RigidObjectCfg(
     prim_path="{ENV_REGEX_NS}/Cup",
-    spawn=sim_utils.CylinderCfg(
+    spawn=sim_utils.CapsuleCfg(
         radius=CUP_RADIUS,
         height=CUP_HEIGHT,
         mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(angular_damping=100.0),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
+        collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.9, 0.9)),
     ),
     init_state=RigidObjectCfg.InitialStateCfg(
-        pos=(0.20, 0.10, MAT_SURFACE_Z + CUP_HEIGHT / 2),
+        # x=0.18 (borrowed from the rack in vials_to_rack_env_cfg.py) turned
+        # out to only be clear of the arm's rest-pose sweep for something as
+        # flat as the rack - this cup is taller and still clipped there.
+        # x=0.23 is the x-coordinate every other object in this scene uses
+        # (containers, scoop) and none of them have ever clipped across many
+        # live tests, so use that proven-safe distance from the robot base
+        # instead, offset in y to avoid overlapping the other objects.
+        pos=(0.23, 0.14, MAT_SURFACE_Z + CUP_HEIGHT / 2 + CUP_RADIUS),
     ),
 )
 
 scoop = RigidObjectCfg(
     prim_path="{ENV_REGEX_NS}/Scoop",
-    spawn=sim_utils.CylinderCfg(
+    # Capsule, not cylinder: PhysX has no native analytic cylinder shape, so a
+    # CylinderCfg with collision gets auto-approximated as a convex hull
+    # (faceted), a known source of grip instability for smooth round objects
+    # pinched between flat jaws. Capsule IS a true native PhysX primitive -
+    # the standard choice for rod/peg-shaped grasped objects in robotics sims.
+    #
+    # Properties otherwise deliberately minimal, matching vials_to_rack's
+    # vial (mass_props + rigid_props(angular_damping) only, no explicit
+    # physics_material/solver tuning/custom contact offsets) - none of that
+    # extra tuning fixed the original clipping/stuck-in-gripper behavior, so
+    # it's not the differentiator; only collision_props is added beyond the
+    # vial's own set, since a bare primitive (unlike the vial's authored USD
+    # mesh) has no pre-existing collision API to enable it needs turned on.
+    spawn=sim_utils.CapsuleCfg(
         radius=SCOOP_RADIUS,
         height=SCOOP_LENGTH,
-        mass_props=sim_utils.MassPropertiesCfg(mass=0.01),
+        mass_props=sim_utils.MassPropertiesCfg(mass=0.02),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(angular_damping=100.0),
-        collision_props=sim_utils.CollisionPropertiesCfg(),
+        collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.7, 0.7, 0.75)),
     ),
     init_state=RigidObjectCfg.InitialStateCfg(
@@ -126,11 +159,11 @@ class ScoopPowderSceneCfg(SO101TaskSceneCfg):
 
     container_1 = container_base.replace()
     container_1.prim_path = "{ENV_REGEX_NS}/Container_1"
-    container_1.init_state.pos = (0.23, -0.12, MAT_SURFACE_Z + CONTAINER_HEIGHT / 2)
+    container_1.init_state.pos = (0.23, -0.12, MAT_SURFACE_Z + CONTAINER_HEIGHT / 2 + CONTAINER_RADIUS)
 
     container_2 = container_base.replace()
     container_2.prim_path = "{ENV_REGEX_NS}/Container_2"
-    container_2.init_state.pos = (0.23, -0.04, MAT_SURFACE_Z + CONTAINER_HEIGHT / 2)
+    container_2.init_state.pos = (0.23, -0.04, MAT_SURFACE_Z + CONTAINER_HEIGHT / 2 + CONTAINER_RADIUS)
     container_2.spawn.visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.95, 0.95, 0.85))
 
     cup = cup.replace()
@@ -166,9 +199,9 @@ class ScoopPowderEventCfg(TaskEventCfg):
                 "scoop": {"x": (-0.03, 0.03), "y": (-0.03, 0.03), "roll": (-0.2, 0.2), "yaw": (-0.3, 0.3)},
             },
             "fixed_z": {
-                "container_1": MAT_SURFACE_Z + CONTAINER_HEIGHT / 2,
-                "container_2": MAT_SURFACE_Z + CONTAINER_HEIGHT / 2,
-                "cup": MAT_SURFACE_Z + CUP_HEIGHT / 2,
+                "container_1": MAT_SURFACE_Z + CONTAINER_HEIGHT / 2 + CONTAINER_RADIUS,
+                "container_2": MAT_SURFACE_Z + CONTAINER_HEIGHT / 2 + CONTAINER_RADIUS,
+                "cup": MAT_SURFACE_Z + CUP_HEIGHT / 2 + CUP_RADIUS,
                 "scoop": MAT_SURFACE_Z + SCOOP_RADIUS,
             },
         },
@@ -269,3 +302,75 @@ class ScoopPowderEvalEnvCfg(ScoopPowderEnvCfg):
     def __post_init__(self) -> None:
         super().__post_init__()
         self.episode_length_s = 450 / 60.0
+
+
+# --- Debug-only: scoop alone, no containers/cup, to isolate whether the
+# grasp-clipping issue is specific to the scoop's own config or common to
+# every new primitive object. ---
+
+
+@configclass
+class ScoopOnlySceneCfg(SO101TaskSceneCfg):
+    robot: ArticulationCfg = S0101_CONTACT_GRASP_CFG.replace(
+        prim_path="{ENV_REGEX_NS}/Robot"
+    )
+
+    scoop = scoop.replace()
+    scoop.prim_path = "{ENV_REGEX_NS}/Scoop"
+
+    contact_grasp = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/jaw",
+        update_period=0.0,
+        history_length=1,
+        debug_vis=False,
+        filter_prim_paths_expr=[
+            "{ENV_REGEX_NS}/Scoop",
+        ],
+    )
+
+
+@configclass
+class ScoopOnlyEventCfg(TaskEventCfg):
+    reset_scoop_only = EventTerm(
+        func=reset_scoop_powder_objects,
+        mode="reset",
+        params={
+            "objects": {
+                "scoop": {"x": (-0.03, 0.03), "y": (-0.03, 0.03), "roll": (-0.2, 0.2), "yaw": (-0.3, 0.3)},
+            },
+            "fixed_z": {
+                "scoop": MAT_SURFACE_Z + SCOOP_RADIUS,
+            },
+        },
+    )
+
+
+@configclass
+class ScoopOnlyObservationsCfg(TaskObservationsCfg):
+    @configclass
+    class SubtaskCfg(ObsGroup):
+        scoop_grasped_obs = ObsTerm(
+            func=scoop_grasped,
+            params={
+                "contact_sensor_cfg": SceneEntityCfg("contact_grasp"),
+                "scoop_name": "scoop",
+                "min_height": MAT_SURFACE_Z + 0.01,
+                "warmup_steps": 30,
+                "force_threshold": 2,
+            },
+        )
+
+        def __post_init__(self) -> None:
+            self.enable_corruption = False
+            self.concatenate_terms = False
+
+    subtask_terms: SubtaskCfg = SubtaskCfg()
+
+
+@configclass
+class ScoopOnlyEnvCfg(SO101TaskEnvCfg):
+    """Debug env: just the robot and the scoop, nothing else."""
+
+    scene: ScoopOnlySceneCfg = ScoopOnlySceneCfg()
+    events: ScoopOnlyEventCfg = ScoopOnlyEventCfg()
+    observations: ScoopOnlyObservationsCfg = ScoopOnlyObservationsCfg()
