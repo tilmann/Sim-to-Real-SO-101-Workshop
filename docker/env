@@ -1,7 +1,7 @@
 export LEROBOT_CALIB=.cache/huggingface/lerobot/calibration
-export TELEOP_PORT=/dev/ttyACM1
-export ROBOT_PORT=/dev/ttyACM0
-export TELEOP_ID=orange_teleop
-export ROBOT_ID=orange_robot
-export CAMERA_GRIPPER=0
-export CAMERA_EXTERNAL=4
+export TELEOP_PORT=/dev/serial/by-id/usb-1a86_USB_Single_Serial_5A68011026-if00
+export ROBOT_PORT=/dev/serial/by-id/usb-1a86_USB_Single_Serial_5A68009825-if00
+export TELEOP_ID=leader
+export ROBOT_ID=follower
+export CAMERA_GRIPPER=2
+export CAMERA_EXTERNAL=0
