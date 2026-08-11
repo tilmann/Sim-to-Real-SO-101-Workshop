@@ -29,56 +29,12 @@ Usage:
 """
 
 import argparse
-import glob
-import json
 import sys
-import threading
 import time
-
-import serial
 
 from lerobot.robots.so101_follower import SO101Follower as SOFollower
 from lerobot.robots.so101_follower import SO101FollowerConfig as SOFollowerRobotConfig
-
-
-def find_scale_port() -> str | None:
-    """Find the Tab5's stable by-id serial path (robust to ttyACM renumbering)."""
-    matches = glob.glob("/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*")
-    return matches[0] if matches else None
-
-
-class ScaleReader:
-    """Background thread tailing the Tab5's JSON weight stream."""
-
-    def __init__(self, port: str):
-        self.port = port
-        self.grams: float | None = None
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def start(self):
-        self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        self._thread.join(timeout=2)
-
-    def _run(self):
-        ser = serial.Serial(self.port, 115200, timeout=1)
-        buf = b""
-        while not self._stop.is_set():
-            chunk = ser.read(256)
-            if not chunk:
-                continue
-            buf += chunk
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                try:
-                    data = json.loads(line.decode(errors="ignore"))
-                    self.grams = data["grams"]
-                except (ValueError, KeyError):
-                    continue
-        ser.close()
+from sim_to_real_so101.utils.scale_reader import ScaleReader, find_scale_port
 
 
 def main():

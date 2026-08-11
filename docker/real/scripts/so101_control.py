@@ -34,6 +34,7 @@ from lerobot.robots import (  # noqa: F401
 )
 from lerobot.robots.so101_follower import SO101FollowerConfig
 from lerobot.utils.utils import init_logging
+from sim_to_real_so101.utils.scale_reader import ScaleReader, find_scale_port
 import rerun as rr
 
 
@@ -66,6 +67,8 @@ class SetupConfig:
     play_sounds: bool = False
     passive_mode: bool = False
     rerun: bool = False
+    scale_port: str | None = None  # M5Stack Tab5 scale serial port; auto-detected if unset
+    disable_scale: bool = False  # skip scale entirely, even if one is detected
 
 
 class SO101Control:
@@ -95,9 +98,20 @@ class SO101Control:
         self.rerun = cfg.rerun
         self._hw_lock = threading.Lock()
 
+        self.scale: ScaleReader | None = None
+        if not cfg.disable_scale:
+            scale_port = cfg.scale_port or find_scale_port()
+            if scale_port:
+                self.scale = ScaleReader(scale_port)
+            else:
+                logging.info("No scale detected - continuing without weight readings.")
+
     def connect(self):
         logging.info("Initializing robot")
         self.robot.connect()
+        if self.scale:
+            self.scale.start()
+            logging.info(f"Scale connected on {self.scale.port}")
         if self.rerun:
             init_rerun()
         if self.passive_mode:
@@ -105,7 +119,7 @@ class SO101Control:
             logging.info("Robot in passive mode. Move the arm to desired poses.")
         else:
             self.move_to_initial_pose()
-        
+
 
     def disconnect(self):
         if self.passive_mode:
@@ -118,6 +132,8 @@ class SO101Control:
             self.move_to_home_pose()
 
         self.robot.disconnect()
+        if self.scale:
+            self.scale.stop()
 
         if self.rerun:
             kill_rerun()
@@ -159,7 +175,10 @@ class SO101Control:
     # -----------------------------------------------------------------
     def get_observation(self) -> Dict[str, Any]:
         with self._hw_lock:
-            return self.robot.get_observation()
+            obs = self.robot.get_observation()
+        if self.scale is not None:
+            obs["scale.grams"] = self.scale.grams
+        return obs
 
     def send_action(self, action: Dict[str, Any]) -> None:
         with self._hw_lock:

@@ -92,7 +92,7 @@ class So100Adapter:
 
     Responsible for:
         • Packaging camera frames as obs["video"]
-        • Building obs["state"] for arm + gripper
+        • Building obs["state"] for arm + gripper (+ scale, when connected)
         • Adding language instruction
         • Adding batch/time dimensions
         • Decoding model action chunks into real robot actions
@@ -131,6 +131,10 @@ class So100Adapter:
             "single_arm": state[:5],  # (5,)
             "gripper": state[5:6],  # (1,)
         }
+
+        # (2b) Scale reading, if a scale is connected and has produced a reading yet
+        if obs.get("scale.grams") is not None:
+            model_obs["state"]["scale"] = np.array([obs["scale.grams"]], dtype=np.float32)
 
         # (3) Language
         model_obs["language"] = {"annotation.human.task_description": obs["lang"]}
@@ -225,6 +229,8 @@ class EvalConfig:
     rerun: bool = False
     passive_mode: bool = False
     plot: bool = False
+    scale_port: str | None = None  # M5Stack Tab5 scale serial port; auto-detected if unset
+    disable_scale: bool = False  # skip scale entirely, even if one is detected
 
 
 
